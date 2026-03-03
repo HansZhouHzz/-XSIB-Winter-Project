@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>大底板粗犷飞线版 - 微型特斯拉线圈 (光影&纹理修复版)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a1a22; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #info {
+            position: absolute; top: 20px; width: 100%; text-align: center;
+            color: #ffffff; pointer-events: none; opacity: 0.95; line-height: 1.6;
+            text-shadow: 0px 2px 4px rgba(0,0,0,1);
+        }
+        .highlight { color: #00ff88; font-weight: 800; font-size: 1.3em; letter-spacing: 1px;}
+        canvas { display: block; outline: none; }
+        
+        #view-controls {
+            position: absolute; bottom: 30px; width: 100%; text-align: center; pointer-events: none;
+        }
+        .btn {
+            pointer-events: auto; background: rgba(50, 50, 60, 0.8); backdrop-filter: blur(4px);
+            color: #eee; border: 1px solid #666; padding: 10px 20px; margin: 0 5px;
+            border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: bold;
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        .btn:hover { background: #00ff88; color: #000; border-color: #00ff88; transform: translateY(-2px); box-shadow: 0 6px 16px rgba(0,255,136,0.3);}
+        .btn-bottom { background: rgba(30, 80, 50, 0.8); border-color: #336644; color: #fff;}
+        .btn-bottom:hover { background: #33bb66; border-color: #33bb66; color: #fff;}
+
+        /* 悬停提示框 */
+        #tooltip {
+            position: absolute; top: 20px; right: 20px; background: rgba(10, 30, 20, 0.9);
+            border-left: 4px solid #00ff88; color: #fff; padding: 12px 18px; border-radius: 4px;
+            font-size: 14px; pointer-events: none; opacity: 0; transition: opacity 0.2s;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5); transform: translateZ(0);
+        }
+        #tooltip-title { font-weight: bold; color: #00ff88; margin-bottom: 4px; font-size: 16px; }
+    </style>
+</head>
+<body>
+<div id="info">
+    <span class="highlight">扩大化 10x7 底板 + 粗犷焊点直连版</span><br>
+    视角拉远 | 告别鳄鱼夹，全节点大焊锡暴力飞线 | 物理光影 & 悬停交互<br>
+    <span style="font-size: 12px; color: #ccc;">左键旋转 | 滚轮缩放 | 右键平移 | 鼠标悬浮查看元件</span>
+</div>
+
+<div id="tooltip">
+    <div id="tooltip-title">Component</div>
+    <div id="tooltip-desc">Description</div>
+</div>
+
+<div id="view-controls">
+    <button class="btn" id="btn-top">俯视图</button>
+    <button class="btn" id="btn-front">正视图</button>
+    <button class="btn" id="btn-side">侧视图</button>
+    <button class="btn" id="btn-iso">等轴测</button>
+    <button class="btn btn-bottom" id="btn-bottom">检查底部走线</button>
+</div>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        }
+    }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // ==========================================
+    // 1. 初始化场景
+    // ==========================================
+    const scene = new THREE.Scene();
+    // 背景稍微调亮一点，雾气颜色也相应变浅
+    scene.background = new THREE.Color(0x1a1a22);
+    scene.fog = new THREE.FogExp2(0x1a1a22, 0.002);
+
+    const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 2000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: "high-performance" });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 限制像素比优化性能
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    // 调高曝光度
+    renderer.toneMappingExposure = 1.3; 
+    document.body.appendChild(renderer.domElement);
+
+    // ==========================================
+    // 2. 动态纹理生成 (Canvas)
+    // ==========================================
+    // 修复纹理：减小画布尺寸，增加内边距，确保色环不拉伸且完全可见
+    function createResistorTexture() {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128; canvas.height = 32; // 减小尺寸提高精度
+        const ctx = canvas.getContext('2d');
+        
+        // 绘制色环区域底色 (棕色体)
+        ctx.fillStyle = '#b08050'; 
+        ctx.fillRect(0, 0, 128, 32);
+        
+        // 画色环 (棕黑黑橙棕 = 100k 1%)
+        const bands = ['#8b4513', '#000000', '#000000', '#ff8c00', '#8b4513'];
+        const startX = 20; const spacing = 18; const bandWidth = 6;
+        
+        // 在体部绘制色环
+        bands.forEach((color, i) => {
+            ctx.fillStyle = color;
+            let x = startX + i * spacing;
+            // 最后一环(误差环)间隔稍大
+            if (i === 4) x += 8; 
+            ctx.fillRect(x, 0, bandWidth, 32); 
+        });
+        
+        const tex = new THREE.CanvasTexture(canvas);
+        // 关键修复：设置纹理包裹和过滤模式，防止拉伸和模糊
+        tex.wrapS = THREE.ClampToEdgeWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.magFilter = THREE.LinearFilter;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy(); // 启用各向异性过滤
+        return tex;
+    }
+
+    // ==========================================
+    // 3. 高级物理材质库
+    // ==========================================
+    const materials = {
+        // PCB板颜色稍微调亮，增加漫反射
+        board: new THREE.MeshPhysicalMaterial({ color: 0x0a4422, roughness: 0.5, metalness: 0.2, clearcoat: 0.5, clearcoatRoughness: 0.3 }), 
+        pad: new THREE.MeshStandardMaterial({ color: 0xffd700, roughness: 0.2, metalness: 1.0, side: THREE.DoubleSide }), // 沉金焊盘更亮
+        plastic: new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.7, metalness: 0.1 }), // 塑料稍微调浅
+        metalTab: new THREE.MeshStandardMaterial({ color: 0xaaaaaa, roughness: 0.3, metalness: 1.0 }),
+        heatsinkAlum: new THREE.MeshStandardMaterial({ color: 0xd0d4d8, roughness: 0.2, metalness: 1.0, flatShading: true }), // 散热片更亮
+        shinyPin: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1, metalness: 1.0 }), // 引脚全白
+        secCopper: new THREE.MeshStandardMaterial({ color: 0xff8c44, roughness: 0.15, metalness: 1.0, side: THREE.DoubleSide }), // 铜线更鲜艳
+        pvc: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0.05, side: THREE.DoubleSide }), // PVC骨架亮白
+        gap: new THREE.MeshBasicMaterial({ color: 0x000000 }),
+        priCopperPin: new THREE.MeshStandardMaterial({ color: 0xff8c44, roughness: 0.15, metalness: 1.0 }),
+        redRubber: new THREE.MeshStandardMaterial({ color: 0xee2222, roughness: 0.5, metalness: 0.05 }), // 红色绝缘层更亮
+        blackTape: new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8, metalness: 0.05, side: THREE.DoubleSide }),
+        capRed: new THREE.MeshPhysicalMaterial({ color: 0xcc0000, roughness: 0.2, metalness: 0.1, clearcoat: 1.0 }), // CBB电容更亮
+        // 修复电阻材质：应用新纹理，使用基础白色调节以便纹理正确显示
+        resBlue: new THREE.MeshStandardMaterial({ map: createResistorTexture(), color: 0xffffff, roughness: 0.4, metalness: 0.0 }), 
+        screwMetal: new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.2, metalness: 1.0 }),
+        
+        // 焊锡变得非常圆润闪亮
+        solder: new THREE.MeshStandardMaterial({ color: 0xf0f3f5, roughness: 0.1, metalness: 1.0 }), 
+        wireBrown: new THREE.MeshStandardMaterial({ color: 0x884422, roughness: 0.6, metalness: 0.0 }), 
+        wireBlue: new THREE.MeshStandardMaterial({ color: 0x0066ff, roughness: 0.6, metalness: 0.0 }), // 导线颜色更鲜艳
+        wireRedDark: new THREE.MeshStandardMaterial({ color: 0xff2222, roughness: 0.6, metalness: 0.0 }), 
+        wireBlack: new THREE.MeshStandardMaterial({ color: 0x333333, roughness: 0.6, metalness: 0.0 }), 
+        wireBare: new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.15, metalness: 1.0 }) 
+    };
+
+    const mainGroup = new THREE.Group();
+    const interactableObjects = []; // 用于射线检测的对象数组
+
+    // ==========================================
+    // 4. 构建底板与组件
+    // ==========================================
+    function createBoard() {
+        const boardGroup = new THREE.Group();
+        const width = 100, height = 70, thickness = 1.6, pitch = 2.54;
+        const cols = 38, rows = 26;
+        
+        const boardShape = new THREE.Shape();
+        const r = 2.0; 
+        boardShape.moveTo(-width/2 + r, -height/2);
+        boardShape.lineTo(width/2 - r, -height/2);
+        boardShape.quadraticCurveTo(width/2, -height/2, width/2, -height/2 + r);
+        boardShape.lineTo(width/2, height/2 - r);
+        boardShape.quadraticCurveTo(width/2, height/2, width/2 - r, height/2);
+        boardShape.lineTo(-width/2 + r, height/2);
+        boardShape.quadraticCurveTo(-width/2, height/2, -width/2, height/2 - r);
+        boardShape.lineTo(-width/2, -height/2 + r);
+        boardShape.quadraticCurveTo(-width/2, -height/2, -width/2 + r, -height/2);
+
+        const mHoles = [ [-46, -31], [46, -31], [46, 31], [-46, 31] ];
+        mHoles.forEach(pos => {
+            const hole = new THREE.Path(); hole.absarc(pos[0], pos[1], 1.5, 0, Math.PI * 2, false);
+            boardShape.holes.push(hole);
+        });
+
+        const startX = -((cols - 1) * pitch) / 2;
+        const startY = -((rows - 1) * pitch) / 2;
+        for(let i = 0; i < cols; i++) {
+            for(let j = 0; j < rows; j++) {
+                const hole = new THREE.Path();
+                hole.absarc(startX + i * pitch, startY + j * pitch, 0.45, 0, Math.PI * 2, false); 
+                boardShape.holes.push(hole);
+            }
+        }
+
+        const boardGeo = new THREE.ExtrudeGeometry(boardShape, { depth: thickness, bevelEnabled: true, bevelThickness: 0.2, bevelSize: 0.2, bevelSegments: 3, curveSegments: 8 });
+        boardGeo.translate(0, 0, -thickness/2); 
+        const boardMesh = new THREE.Mesh(boardGeo, materials.board);
+        boardMesh.receiveShadow = true;
+        boardGroup.add(boardMesh);
+
+        // 使用沉金质感圆环作为焊盘
+        const pads = new THREE.InstancedMesh(new THREE.RingGeometry(0.5, 0.9, 12), materials.pad, cols * rows * 2);
+        let padIndex = 0;
+        const dummy = new THREE.Object3D();
+        const padZOffset = thickness / 2 + 0.02;
+
+        for(let i = 0; i < cols; i++) {
+            for(let j = 0; j < rows; j++) {
+                dummy.position.set(startX + i * pitch, startY + j * pitch, padZOffset);
+                dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); pads.setMatrixAt(padIndex++, dummy.matrix);
+                dummy.position.set(startX + i * pitch, startY + j * pitch, -padZOffset);
+                dummy.rotation.set(Math.PI, 0, 0); dummy.updateMatrix(); pads.setMatrixAt(padIndex++, dummy.matrix);
+            }
+        }
+        pads.instanceMatrix.needsUpdate = true;
+        boardGroup.add(pads);
+        boardGroup.userData = { title: "大尺寸洞洞板", desc: "10x7cm 双面玻纤板，为元件提供充足散热与飞线空间。" };
+        interactableObjects.push(boardGroup);
+        return boardGroup;
+    }
+    mainGroup.add(createBoard());
+    const zSurface = 1.6 / 2;
+
+    // 元件创建
+    function createMOSFET() {
+        const mosGroup = new THREE.Group();
+        mosGroup.add(new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.92, 0.45), materials.plastic));
+        const tab = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.5, 0.12), materials.metalTab);
+        tab.position.set(0, 0.29, -0.285); mosGroup.add(tab);
+        [-0.254, 0, 0.254].forEach(x => {
+            const pin = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.8, 0.05), materials.shinyPin);
+            pin.position.set(x, -0.6, 0.1); pin.rotation.x = Math.PI / 8; mosGroup.add(pin);
+        });
+        const heatsink = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 0.6), materials.heatsinkAlum);
+        heatsink.position.set(0, 0.4, -0.645); mosGroup.add(heatsink);
+        mosGroup.scale.set(10, 10, 10);
+        
+        // 增加包围盒用于射线检测
+        const hitBox = new THREE.Mesh(new THREE.BoxGeometry(1.5, 2.5, 1.5), new THREE.MeshBasicMaterial({visible:false}));
+        hitBox.position.set(0,0.5,-0.3); mosGroup.add(hitBox);
+        mosGroup.userData = { title: "功率 MOSFET", desc: "核心振荡元件 (如 IRF530)，配有铝制散热片防止过热。" };
+        interactableObjects.push(hitBox); hitBox.userData = mosGroup.userData;
+        
+        return mosGroup;
+    }
+    const myMOS = createMOSFET();
+    myMOS.rotation.x = Math.PI / 2; myMOS.position.set(-8, 10, zSurface + 7);
+    myMOS.traverse(c => { if(c.isMesh) c.castShadow = true; });
+    mainGroup.add(myMOS);
+
+    function createSecondaryCoil() {
+        const coilGroup = new THREE.Group();
+        const coilHeight = 160, outerRadius = 12, innerRadius = 10;
+        coilGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(outerRadius, outerRadius, coilHeight, 32, 1, true), materials.secCopper));
+        coilGroup.add(new THREE.Mesh(new THREE.CylinderGeometry(innerRadius, innerRadius, coilHeight, 32, 1, true), materials.pvc));
+        const topCap = new THREE.Mesh(new THREE.RingGeometry(innerRadius, outerRadius, 32), materials.secCopper);
+        topCap.rotation.x = -Math.PI / 2; topCap.position.y = coilHeight / 2; coilGroup.add(topCap);
+        
+        // 放电顶针与电晕
+        const dischargePin = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 10, 8), materials.shinyPin);
+        dischargePin.position.y = coilHeight/2 + 5; coilGroup.add(dischargePin);
+        
+        const glowMaterial = new THREE.MeshBasicMaterial({ color: 0xaa77ff, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false });
+        const glow = new THREE.Mesh(new THREE.SphereGeometry(6, 16, 16), glowMaterial);
+        glow.position.copy(dischargePin.position); glow.position.y += 4;
+        glow.scale.set(1, 1.2, 1); coilGroup.add(glow);
+
+        [20, 50, 85, 120, 145].forEach(y => {
+            const gapMesh = new THREE.Mesh(new THREE.TorusGeometry(outerRadius, 0.4, 8, 32), materials.gap);
+            gapMesh.rotation.x = Math.PI / 2; gapMesh.position.y = y - (coilHeight / 2); coilGroup.add(gapMesh);
+        });
+
+        const hitBox = new THREE.Mesh(new THREE.CylinderGeometry(outerRadius+1, outerRadius+1, coilHeight+10, 16), new THREE.MeshBasicMaterial({visible:false}));
+        coilGroup.add(hitBox);
+        coilGroup.userData = { title: "次级线圈 (谐振器)", desc: "数千匝极细漆包线绕制，将电压升至击穿空气的程度。" };
+        interactableObjects.push(hitBox); hitBox.userData = coilGroup.userData;
+
+        return coilGroup;
+    }
+    const mySecCoil = createSecondaryCoil();
+    mySecCoil.rotation.x = Math.PI / 2; mySecCoil.position.set(28, 0, zSurface + 80);
+    mySecCoil.traverse(c => { if(c.isMesh && !c.material.transparent) c.castShadow = true; });
+    mainGroup.add(mySecCoil);
+
+    class CoilCurve extends THREE.Curve {
+        constructor(r, p, s, e) { super(); this.r = r; this.p = p; this.s = s; this.e = e; }
+        getPoint(t, opt = new THREE.Vector3()) {
+            const a = this.s + t * (this.e - this.s);
+            return opt.set(this.r * Math.cos(a), (a / (Math.PI * 2)) * this.p - (this.p * 5 / 2), this.r * Math.sin(a));
+        }
+    }
+    function createPrimaryCoil() {
+        const coilGroup = new THREE.Group();
+        const R_coil = 1.6, pitch = 0.8, turns = 5;
+        coilGroup.add(new THREE.Mesh(new THREE.TubeGeometry(new CoilCurve(R_coil, pitch, -Math.PI, Math.PI * 11), 300, 0.18, 12, false), materials.priCopperPin));
+        coilGroup.add(new THREE.Mesh(new THREE.TubeGeometry(new CoilCurve(R_coil, pitch, 0, Math.PI * 10), 250, 0.38, 24, false), materials.redRubber));
+        
+        const tapeShape = new THREE.Shape();
+        tapeShape.absarc(0, 0, R_coil + 0.48, 0, Math.PI * 1.5, false);
+        tapeShape.absarc(0, 0, R_coil - 0.45, Math.PI * 1.5, 0, true);
+        const tapeGeo = new THREE.ExtrudeGeometry(tapeShape, { depth: pitch * turns - 0.2, bevelEnabled: false, curveSegments: 32 });
+        tapeGeo.rotateX(-Math.PI / 2); tapeGeo.translate(0, -(pitch * turns - 0.2) / 2, 0); 
+        coilGroup.add(new THREE.Mesh(tapeGeo, materials.blackTape));
+        coilGroup.scale.set(10, 10, 10);
+        
+        const hitBox = new THREE.Mesh(new THREE.CylinderGeometry(R_coil*10+5, R_coil*10+5, pitch*turns*10, 16), new THREE.MeshBasicMaterial({visible:false}));
+        coilGroup.add(hitBox);
+        coilGroup.userData = { title: "初级线圈", desc: "粗导线绕制，与谐振电容配合构成 LC 振荡回路，产生高频磁场。" };
+        interactableObjects.push(hitBox); hitBox.userData = coilGroup.userData;
+
+        return coilGroup;
+    }
+    const myPriCoil = createPrimaryCoil();
+    myPriCoil.rotation.x = Math.PI / 2; myPriCoil.position.set(28, 0, zSurface + 20);
+    myPriCoil.traverse(c => { if(c.isMesh) c.castShadow = true; });
+    mainGroup.add(myPriCoil);
+
+    // 控制区元件
+    const potGroup = new THREE.Group();
+    const potBase = new THREE.Mesh(new THREE.BoxGeometry(10, 10, 10), materials.screwMetal);
+    const potKnob = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 12, 16).rotateX(Math.PI / 2), materials.plastic);
+    potKnob.position.set(-5, -8, 0); potGroup.add(potBase); potGroup.add(potKnob);
+    potGroup.position.set(-30, -18, zSurface + 5); potGroup.rotation.z = Math.PI / 6;
+    potGroup.traverse(c => { if(c.isMesh) c.castShadow = true; });
+    potGroup.userData = { title: "电位器 (可变电阻)", desc: "用于调节振荡管基极偏置，微调电弧的起振状态与大小。" };
+    interactableObjects.push(potBase); potBase.userData = potGroup.userData;
+    mainGroup.add(potGroup);
+
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(9, 4.5, 11), materials.capRed);
+    cap.position.set(-30, 2, zSurface + 5.5); cap.rotation.z = -Math.PI / 6; cap.castShadow = true;
+    cap.userData = { title: "CBB 谐振电容", desc: "高压无极性电容，与初级线圈并联提供强大的瞬间放电电流。" };
+    interactableObjects.push(cap);
+    mainGroup.add(cap);
+
+    // 修复电阻几何体：增加分段数，确保圆柱体平滑，纹理显示更自然
+    const resGeo = new THREE.CylinderGeometry(1.6, 1.6, 12, 32, 1).rotateZ(Math.PI / 2);
+    const res = new THREE.Mesh(resGeo, materials.resBlue);
+    res.position.set(-15, -8, zSurface + 3.2); res.rotation.x = Math.PI / 6; res.castShadow = true;
+    res.userData = { title: "限流电阻", desc: "保护电路免受过大电流冲击，通常为数千欧姆的大功率电阻。" };
+    interactableObjects.push(res);
+    mainGroup.add(res);
+
+    const terminal = new THREE.Mesh(new THREE.BoxGeometry(10, 8, 10), materials.plastic);
+    terminal.position.set(-38, 20, zSurface + 5); terminal.castShadow = true;
+    terminal.userData = { title: "电源接线柱", desc: "DC 直流电源输入端，建议输入电压 12V - 24V。" };
+    interactableObjects.push(terminal);
+    mainGroup.add(terminal);
+
+    // ==========================================
+    // 5. 暴力平滑焊锡与飞线生成
+    // ==========================================
+    const pins = {
+        pwr_pos: [-38, 18, 1], pwr_gnd: [-38, 22, 1], cap_pos: [-30, 4, 2], cap_gnd: [-30, 0, 2],
+        mos_g: [-10.5, 9, 2], mos_d: [-8, 9, 2], mos_s: [-5.5, 9, 2], res_g: [-18, -8, 4], res_gnd: [-12, -8, 2],
+        pot_pos: [-27, -21, 5], pot_w: [-30, -18, 5], pot_gnd: [-33, -15, 5],
+        pri_in: [28, 16, 2], pri_out: [28, -16, 2], sec_bot: [28, -12, 2]
+    };
+
+    function addPin(x, y, h) {
+        const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 3, 8).rotateX(Math.PI / 2), materials.shinyPin);
+        pin.position.set(x, y, zSurface + h); pin.castShadow = true; mainGroup.add(pin);
+    }
+    for (const key in pins) addPin(pins[key][0], pins[key][1], pins[key][2]);
+
+    // 逼真的熔化焊锡块
+    function addSolderBlob(x, y, z) {
+        // 使用挤压球体模拟焊锡的表面张力圆润感
+        const blobGeo = new THREE.SphereGeometry(1.2, 16, 16);
+        const blob = new THREE.Mesh(blobGeo, materials.solder);
+        blob.position.set(x, y, z);
+        blob.scale.set(1.0 + Math.random()*0.2, 0.6 + Math.random()*0.3, 1.0 + Math.random()*0.2); // 底部扁平
+        blob.rotation.set(Math.random()*Math.PI, 0, Math.random()*Math.PI);
+        blob.castShadow = true; blob.receiveShadow = true;
+        mainGroup.add(blob);
+    }
+    for (const key in pins) { addSolderBlob(pins[key][0], pins[key][1], zSurface + pins[key][2]); }
+
+    function addArcWire(p1, p2, material, radius, heightOffset, randomness = 1.0) {
+        const start = new THREE.Vector3(p1[0], p1[1], zSurface + (p1[2]||0));
+        const end = new THREE.Vector3(p2[0], p2[1], zSurface + (p2[2]||0));
+        const midX = (start.x + end.x) / 2 + (Math.random() - 0.5) * randomness * 5;
+        const midY = (start.y + end.y) / 2 + (Math.random() - 0.5) * randomness * 5;
+        const midZ = Math.max(start.z, end.z) + heightOffset + Math.random() * randomness * 2;
+        
+        const curve = new THREE.QuadraticBezierCurve3(start, new THREE.Vector3(midX, midY, midZ), end);
+        const wire = new THREE.Mesh(new THREE.TubeGeometry(curve, 32, radius, 12, false), material);
+        wire.castShadow = true; 
+        mainGroup.add(wire);
+    }
+
+    addArcWire(pins.pot_pos, pins.cap_pos, materials.wireBrown, 1.2, 12); 
+    addArcWire(pins.pot_w, pins.res_g, materials.wireBrown, 1.2, 16);   
+    addArcWire(pins.pot_gnd, pins.cap_gnd, materials.wireBrown, 1.2, 20); 
+    addArcWire(pins.pwr_pos, pins.cap_pos, materials.wireRedDark, 0.8, 8); 
+    addArcWire(pins.pwr_gnd, pins.cap_gnd, materials.wireBlack, 0.8, 10);
+    addArcWire(pins.cap_gnd, pins.mos_s, materials.wireBlack, 0.8, 18); 
+    addArcWire(pins.mos_s, pins.res_gnd, materials.wireBare, 0.4, 6); 
+    addArcWire(pins.res_g, pins.mos_g, materials.wireBare, 0.4, 8); 
+    addArcWire(pins.sec_bot, pins.mos_g, materials.wireBlue, 0.6, 20); // 次级直飞MOS栅极
+    addArcWire(pins.pri_in, pins.pwr_pos, materials.wireRedDark, 0.9, 35); 
+    addArcWire(pins.pri_out, pins.mos_d, materials.wireRedDark, 0.9, 15); 
+
+    scene.add(mainGroup);
+
+    // ==========================================
+    // 6. 光影增强
+    // ==========================================
+    // 环境光提高整体亮度
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.4); 
+    scene.add(ambientLight);
+
+    // 半球光提升暗部细节
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x666677, 0.7);
+    hemiLight.position.set(0, 100, 0);
+    scene.add(hemiLight);
+    
+    // 主光：模拟台灯的暖色强光
+    const keyLight = new THREE.DirectionalLight(0xfffae6, 2.2);
+    keyLight.position.set(80, -70, 150);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.width = 2048;
+    keyLight.shadow.mapSize.height = 2048;
+    keyLight.shadow.bias = -0.0005; // 微调消除条纹阴影伪影
+    keyLight.shadow.camera.left = -80; keyLight.shadow.camera.right = 80;
+    keyLight.shadow.camera.top = 80; keyLight.shadow.camera.bottom = -80;
+    scene.add(keyLight);
+    
+    // 补光：从另一侧照亮暗部
+    const fillLight = new THREE.DirectionalLight(0xe6f0ff, 0.8);
+    fillLight.position.set(-100, 50, 50);
+    scene.add(fillLight);
+
+    // 局部光源：增加线圈附近的放电氛围感
+    const pointLight = new THREE.PointLight(0xaa88ff, 2.0, 120);
+    pointLight.position.set(28, 0, 160);
+    scene.add(pointLight);
+
+    // ==========================================
+    // 7. 平滑视角控制 & 射线检测
+    // ==========================================
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.maxDistance = 600;
+
+    // 平滑插值目标变量
+    let targetPos = new THREE.Vector3(-80, -120, 110);
+    let targetUp = new THREE.Vector3(0, 0, 1);
+    camera.position.copy(targetPos);
+    camera.up.copy(targetUp);
+    camera.lookAt(0,0,0);
+
+    function setCameraTarget(pos, up, maxPolar) {
+        targetPos.copy(pos);
+        targetUp.copy(up);
+        controls.maxPolarAngle = maxPolar; 
+    }
+
+    document.getElementById('btn-top').addEventListener('click', () => setCameraTarget(new THREE.Vector3(0.1, 0, 170), new THREE.Vector3(0, 1, 0), Math.PI/2 + 0.1));
+    document.getElementById('btn-front').addEventListener('click', () => setCameraTarget(new THREE.Vector3(0, -140, 45), new THREE.Vector3(0, 0, 1), Math.PI/2 + 0.1));
+    document.getElementById('btn-side').addEventListener('click', () => setCameraTarget(new THREE.Vector3(-140, 0, 45), new THREE.Vector3(0, 0, 1), Math.PI/2 + 0.1));
+    document.getElementById('btn-iso').addEventListener('click', () => setCameraTarget(new THREE.Vector3(-80, -120, 110), new THREE.Vector3(0, 0, 1), Math.PI/2 + 0.1));
+    document.getElementById('btn-bottom').addEventListener('click', () => setCameraTarget(new THREE.Vector3(0.1, 0, -170), new THREE.Vector3(0, 1, 0), Math.PI));
+
+    // 射线检测 (悬停提示)
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const tooltip = document.getElementById('tooltip');
+    const tooltipTitle = document.getElementById('tooltip-title');
+    const tooltipDesc = document.getElementById('tooltip-desc');
+
+    window.addEventListener('mousemove', (event) => {
+        mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    });
+
+    function handleRaycast() {
+        raycaster.setFromCamera(mouse, camera);
+        const intersects = raycaster.intersectObjects(interactableObjects, false);
+        if (intersects.length > 0) {
+            const data = intersects[0].object.userData;
+            if (data && data.title) {
+                tooltipTitle.textContent = data.title;
+                tooltipDesc.textContent = data.desc;
+                tooltip.style.opacity = '1';
+                document.body.style.cursor = 'help';
+            }
+        } else {
+            tooltip.style.opacity = '0';
+            document.body.style.cursor = 'default';
+        }
+    }
+
+    // 主渲染循环
+    const clock = new THREE.Clock();
+    function animate() {
+        requestAnimationFrame(animate);
+        
+        // 摄像机平滑过渡 (Lerp)
+        camera.position.lerp(targetPos, 0.05);
+        camera.up.lerp(targetUp, 0.05);
+        controls.update(); 
+        
+        // 动态呼吸灯效
+        const time = clock.getElapsedTime();
+        pointLight.intensity = 2.0 + Math.sin(time * 15) * 0.5;
+
+        handleRaycast();
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
